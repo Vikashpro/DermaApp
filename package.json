@@ -1,0 +1,21 @@
+{
+  "name": "dermatology-appointment-local",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "server": "node server/start.js",
+    "start": "node server/start.js",
+    "build": "vite build",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "express": "^5.2.1",
+    "vite": "^7.3.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {}
+}
