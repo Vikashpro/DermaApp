@@ -8,6 +8,11 @@ import {
   countAppointments,
   createProcedure,
   createVisit,
+  deleteDoctor,
+  deletePatient,
+  deleteProcedure,
+  deleteSession,
+  deleteTreatment,
   doctorPerformanceReport,
   getClinicSettings,
   listAppointments,
@@ -17,10 +22,15 @@ import {
   lookupPatient,
   procedureReport,
   reviewReport,
+  saveDoctor,
   saveClinicSettings,
+  saveProcedure,
   sessionReport,
   treatmentStatusReport,
-  updateAppointmentDate
+  updateAppointmentDate,
+  updatePatient,
+  updateSession,
+  updateTreatment
 } from '../server/clinicService.js';
 
 function testDb() {
@@ -198,6 +208,78 @@ test('adds procedures to the selectable catalog without duplicates', () => {
   assert.equal(first.created, true);
   assert.equal(duplicate.created, false);
   assert.deepEqual(listProcedures(db, 'hydra').map((procedure) => procedure.name), ['Hydra Facial']);
+});
+
+test('updates and deletes procedure and doctor catalog records when unused', () => {
+  const db = testDb();
+  const procedure = createProcedure(db, 'Hydra Facial').procedure;
+  const updatedProcedure = saveProcedure(db, { id: procedure.id, name: 'Hydra Cleanse' });
+  assert.equal(updatedProcedure.procedure.name, 'Hydra Cleanse');
+  assert.equal(deleteProcedure(db, procedure.id).deleted, true);
+
+  const doctor = saveDoctor(db, { name: 'Dr Amina' }).doctor;
+  const updatedDoctor = saveDoctor(db, { id: doctor.id, name: 'Dr Amina Khan' });
+  assert.equal(updatedDoctor.doctor.name, 'Dr Amina Khan');
+  assert.equal(deleteDoctor(db, doctor.id).deleted, true);
+});
+
+test('updates patient, treatment, and session records and deletes editable records safely', () => {
+  const db = testDb();
+  const diagnosis = createVisit(db, visit({ treatment: { totalSessions: 3 } }));
+  const patientId = diagnosis.patient.id;
+  const treatmentId = diagnosis.activeTreatment.id;
+
+  const patientUpdate = updatePatient(db, {
+    id: patientId,
+    name: 'Ayesha Updated',
+    cnic: '35202-1234567-1',
+    contact: '03009999999',
+    age: 32,
+    gender: 'Female'
+  });
+  assert.equal(patientUpdate.patient.name, 'Ayesha Updated');
+  assert.throws(() => deletePatient(db, patientId), /treatment records/);
+
+  const treatmentUpdate = updateTreatment(db, {
+    id: treatmentId,
+    diagnosis: 'Acne scars',
+    procedure: 'Chemical peel',
+    totalSessions: 4,
+    charges: 7000,
+    doctorName: 'Dr Sana',
+    nextAppointmentDate: '2026-05-22',
+    remarks: 'Updated plan',
+    status: 'active'
+  });
+  assert.equal(treatmentUpdate.activeTreatment.diagnosis, 'Acne scars');
+  assert.equal(treatmentUpdate.activeTreatment.total_sessions, 4);
+
+  const session = createVisit(db, visit({
+    treatment: {
+      doctorName: 'Dr Sana',
+      nextAppointmentDate: '2026-05-29',
+      charges: 2000,
+      remarks: 'Done'
+    }
+  }));
+  const sessionId = session.activeTreatment.sessions[0].id;
+  const sessionUpdate = updateSession(db, {
+    id: sessionId,
+    visitDate: '2026-05-23',
+    doctorName: 'Dr Session',
+    charges: 2500,
+    nextAppointmentDate: '2026-06-01',
+    remarks: 'Updated session'
+  });
+  assert.equal(sessionUpdate.activeTreatment.sessions[0].doctor_name, 'Dr Session');
+  assert.equal(sessionUpdate.activeTreatment.sessions[0].charges, 2500);
+
+  const afterDeleteSession = deleteSession(db, sessionId);
+  assert.equal(afterDeleteSession.activeTreatment.sessions.length, 0);
+
+  const afterDeleteTreatment = deleteTreatment(db, treatmentId);
+  assert.equal(afterDeleteTreatment.activeTreatment, null);
+  assert.equal(deletePatient(db, patientId).deleted, true);
 });
 
 test('saves clinic settings for export headers', () => {

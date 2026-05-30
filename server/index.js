@@ -7,6 +7,11 @@ import {
   countAppointments,
   createProcedure,
   createVisit,
+  deleteDoctor,
+  deletePatient,
+  deleteProcedure,
+  deleteSession,
+  deleteTreatment,
   doctorPerformanceReport,
   getClinicSettings,
   listAppointments,
@@ -16,10 +21,15 @@ import {
   lookupPatient,
   procedureReport,
   reviewReport,
+  saveDoctor,
   sessionReport,
   saveClinicSettings,
+  saveProcedure,
   treatmentStatusReport,
-  updateAppointmentDate
+  updateAppointmentDate,
+  updatePatient,
+  updateSession,
+  updateTreatment
 } from './clinicService.js';
 
 export function createApp(db = openDatabase()) {
@@ -66,8 +76,44 @@ export function createApp(db = openDatabase()) {
     res.json(lookupPatient(db, req.query));
   });
 
+  app.post('/api/patients', (req, res) => {
+    try {
+      res.json(updatePatient(db, req.body ?? {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save patient.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.delete('/api/patients/:id', (req, res) => {
+    try {
+      res.json(deletePatient(db, req.params.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete patient.';
+      res.status(400).json({ error: message });
+    }
+  });
+
   app.get('/api/doctors', (req, res) => {
     res.json({ doctors: listDoctors(db, req.query.search ?? '') });
+  });
+
+  app.post('/api/doctors', (req, res) => {
+    try {
+      res.json(saveDoctor(db, req.body ?? {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save doctor.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.delete('/api/doctors/:id', (req, res) => {
+    try {
+      res.json(deleteDoctor(db, req.params.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete doctor.';
+      res.status(400).json({ error: message });
+    }
   });
 
   app.get('/api/procedures', (req, res) => {
@@ -76,10 +122,19 @@ export function createApp(db = openDatabase()) {
 
   app.post('/api/procedures', (req, res) => {
     try {
-      const result = createProcedure(db, req.body?.name);
+      const result = req.body?.id ? saveProcedure(db, req.body) : createProcedure(db, req.body?.name);
       res.status(result.created ? 201 : 200).json(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to save procedure.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.delete('/api/procedures/:id', (req, res) => {
+    try {
+      res.json(deleteProcedure(db, req.params.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete procedure.';
       res.status(400).json({ error: message });
     }
   });
@@ -110,6 +165,42 @@ export function createApp(db = openDatabase()) {
       res.status(201).json(createVisit(db, req.body));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to save visit.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/treatments', (req, res) => {
+    try {
+      res.json(updateTreatment(db, req.body ?? {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save treatment.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.delete('/api/treatments/:id', (req, res) => {
+    try {
+      res.json(deleteTreatment(db, req.params.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete treatment.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/sessions', (req, res) => {
+    try {
+      res.json(updateSession(db, req.body ?? {}));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save session.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.delete('/api/sessions/:id', (req, res) => {
+    try {
+      res.json(deleteSession(db, req.params.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete session.';
       res.status(400).json({ error: message });
     }
   });

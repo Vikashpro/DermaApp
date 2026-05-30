@@ -149,6 +149,7 @@ h1 {
 
 .form-toolbar {
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
   margin-bottom: 16px;
 }
@@ -241,7 +242,9 @@ h1 {
   align-items: center;
   background: #ffffff;
   border-bottom: 1px solid #e6ece8;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
   min-height: 48px;
   padding: 12px 14px;
 }
@@ -253,6 +256,27 @@ h1 {
 .procedure-row span {
   color: #1f3329;
   font-weight: 700;
+}
+
+.row-edit-form,
+.session-row-edit {
+  display: contents;
+}
+
+.row-edit-form input {
+  min-width: 220px;
+}
+
+.row-edit-form button {
+  min-width: 80px;
+  padding: 8px 10px;
+}
+
+.inline-edit-panel {
+  border: 1px solid #dfe7e2;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  padding: 14px;
 }
 
 .treatment-summary {
@@ -313,11 +337,12 @@ h1 {
 
 .session-row {
   display: grid;
-  grid-template-columns: 76px 118px 1fr 100px 118px 1.4fr;
+  grid-template-columns: 76px 118px 1fr 100px 118px 1.4fr 150px;
   min-height: 42px;
 }
 
-.session-row span {
+.session-row span,
+.session-row input {
   border-bottom: 1px solid #edf2ef;
   border-right: 1px solid #edf2ef;
   color: #26382f;
@@ -326,11 +351,19 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.session-row span:last-child {
+.session-row input {
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 42px;
+}
+
+.session-row span:last-child,
+.session-row input:last-child {
   border-right: 0;
 }
 
-.session-row:last-child span {
+.session-row:last-child span,
+.session-row:last-child input {
   border-bottom: 0;
 }
 
@@ -574,6 +607,12 @@ button:disabled {
 
 .row-actions button:nth-child(2) {
   background: #56645d;
+}
+
+.danger-button,
+.row-actions button.danger-button,
+.actions button.danger-button {
+  background: #9f2f24;
 }
 
 .dashboard-empty {

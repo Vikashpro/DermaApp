@@ -34,6 +34,19 @@ function formatCnic(value) {
   return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
 }
 
+async function readJsonResponse(response, fallbackMessage) {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
+
+  const text = await response.text();
+  if (text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
+    throw new Error(`${fallbackMessage} The local server may need to be restarted.`);
+  }
+  throw new Error(text.trim() || fallbackMessage);
+}
+
 function App() {
   const [page, setPage] = useState(getPageFromPath());
   const [currentUser, setCurrentUser] = useState(null);
@@ -42,9 +55,11 @@ function App() {
   const [treatment, setTreatment] = useState(emptyTreatment);
   const [lookup, setLookup] = useState(null);
   const [doctors, setDoctors] = useState([]);
+  const [doctorCatalog, setDoctorCatalog] = useState([]);
   const [procedures, setProcedures] = useState([]);
   const [clinicSettings, setClinicSettings] = useState(defaultClinicSettings);
   const [newProcedureName, setNewProcedureName] = useState('');
+  const [newDoctorName, setNewDoctorName] = useState('');
   const [sameDateCount, setSameDateCount] = useState(0);
   const [sameDateAppointments, setSameDateAppointments] = useState([]);
   const [appointmentEditMode, setAppointmentEditMode] = useState(false);
@@ -159,6 +174,7 @@ function App() {
   useEffect(() => {
     if (currentUser) {
       loadProcedures().catch(() => {});
+      loadDoctorCatalog().catch(() => {});
       loadClinicSettings().catch(() => {});
     }
   }, [currentUser]);
@@ -182,6 +198,13 @@ function App() {
     }
     const data = await response.json();
     setProcedures(data.procedures ?? []);
+  }
+
+  async function loadDoctorCatalog() {
+    const response = await fetch('/api/doctors?search=');
+    if (!response.ok) throw new Error('Unable to load doctors.');
+    const data = await response.json();
+    setDoctorCatalog(data.doctors ?? []);
   }
 
   async function loadClinicSettings() {
@@ -217,6 +240,103 @@ function App() {
       setMessage(data.created ? 'Procedure added.' : 'Procedure already exists.');
     } catch (procedureError) {
       setError(procedureError.message);
+    }
+  }
+
+  async function savePatientOnly() {
+    if (!lookup?.patient?.id) return;
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/patients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: lookup.patient.id, ...patient })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to save patient.');
+      setLookup({ matched: true, matchedBy: 'patient-update', patient: data.patient, activeTreatment: data.activeTreatment });
+      setMessage('Patient updated.');
+    } catch (patientError) {
+      setError(patientError.message);
+    }
+  }
+
+  async function deletePatientOnly() {
+    if (!lookup?.patient?.id) return;
+    if (!window.confirm('Delete this patient? This is only allowed when the patient has no treatment records.')) return;
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/patients/${lookup.patient.id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to delete patient.');
+      resetAppointmentForm();
+      setMessage('Patient deleted.');
+    } catch (patientError) {
+      setError(patientError.message);
+    }
+  }
+
+  async function saveTreatmentDetails(payload) {
+    setError('');
+    setMessage('');
+    const response = await fetch('/api/treatments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? 'Unable to save treatment.');
+    setLookup({ matched: true, matchedBy: 'treatment-update', patient: data.patient, activeTreatment: data.activeTreatment });
+    await loadDoctorCatalog();
+    await loadProcedures();
+    setMessage('Treatment updated.');
+  }
+
+  async function deleteTreatmentDetails(treatmentId) {
+    if (!window.confirm('Delete this treatment and all its session records?')) return;
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/treatments/${treatmentId}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to delete treatment.');
+      setLookup({ matched: true, matchedBy: 'treatment-delete', patient: data.patient, activeTreatment: data.activeTreatment });
+      setTreatment(emptyTreatment);
+      setMessage('Treatment deleted.');
+    } catch (treatmentError) {
+      setError(treatmentError.message);
+    }
+  }
+
+  async function saveSessionDetails(payload) {
+    setError('');
+    setMessage('');
+    const response = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? 'Unable to save session.');
+    setLookup({ matched: true, matchedBy: 'session-update', patient: data.patient, activeTreatment: data.activeTreatment });
+    await loadDoctorCatalog();
+    setMessage('Session updated.');
+  }
+
+  async function deleteSessionDetails(sessionId) {
+    if (!window.confirm('Delete this session record?')) return;
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to delete session.');
+      setLookup({ matched: true, matchedBy: 'session-delete', patient: data.patient, activeTreatment: data.activeTreatment });
+      setMessage('Session deleted.');
+    } catch (sessionError) {
+      setError(sessionError.message);
     }
   }
 
@@ -445,15 +565,26 @@ function App() {
       ) : page === 'procedures' ? (
         <ProcedurePage
           newProcedureName={newProcedureName}
+          newDoctorName={newDoctorName}
           procedures={procedures}
+          doctors={doctorCatalog}
           setNewProcedureName={setNewProcedureName}
+          setNewDoctorName={setNewDoctorName}
           handleAddProcedure={handleAddProcedure}
+          loadProcedures={loadProcedures}
+          loadDoctorCatalog={loadDoctorCatalog}
         />
       ) : (
       <div className="appointment-workspace">
       <form className="entry-form" onSubmit={appointmentEditMode ? handleUpdateAppointmentDate : handleSubmit}>
         <div className="form-toolbar">
           <button type="button" onClick={resetAppointmentForm}>New</button>
+          {lookup?.patient && (
+            <>
+              <button type="button" onClick={savePatientOnly}>Save Patient</button>
+              <button type="button" className="danger-button" onClick={deletePatientOnly}>Delete Patient</button>
+            </>
+          )}
         </div>
         <fieldset>
           <legend>Patient Info</legend>
@@ -489,7 +620,16 @@ function App() {
 
         {activeTreatment ? (
           <>
-            <TreatmentSummary treatment={activeTreatment} />
+            <TreatmentSummary
+              treatment={activeTreatment}
+              procedures={procedures}
+              doctors={doctorCatalog}
+              onSaveTreatment={saveTreatmentDetails}
+              onDeleteTreatment={deleteTreatmentDetails}
+              onSaveSession={saveSessionDetails}
+              onDeleteSession={deleteSessionDetails}
+              onError={setError}
+            />
             {appointmentEditMode ? (
               <fieldset>
                 <legend>Edit Appointment Date</legend>
@@ -1703,9 +1843,116 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
-function ProcedurePage({ newProcedureName, procedures, setNewProcedureName, handleAddProcedure }) {
+function ProcedurePage({
+  newProcedureName,
+  newDoctorName,
+  procedures,
+  doctors,
+  setNewProcedureName,
+  setNewDoctorName,
+  handleAddProcedure,
+  loadProcedures,
+  loadDoctorCatalog
+}) {
+  const [editingProcedure, setEditingProcedure] = useState(null);
+  const [editingDoctor, setEditingDoctor] = useState(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  async function saveProcedureEdit(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/procedures', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingProcedure)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to save procedure.');
+      setEditingProcedure(null);
+      await loadProcedures();
+      setMessage('Procedure updated.');
+    } catch (saveError) {
+      setError(saveError.message);
+    }
+  }
+
+  async function deleteProcedure(id) {
+    if (!window.confirm('Delete this procedure? It cannot be deleted if used in treatments.')) return;
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch(`/api/procedures/${id}`, { method: 'DELETE' });
+      const data = await readJsonResponse(response, 'Unable to delete procedure.');
+      if (!response.ok) throw new Error(data.error ?? 'Unable to delete procedure.');
+      await loadProcedures();
+      setMessage('Procedure deleted.');
+    } catch (deleteError) {
+      setError(deleteError.message);
+    }
+  }
+
+  async function addDoctor(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/doctors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newDoctorName })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to save doctor.');
+      setNewDoctorName('');
+      await loadDoctorCatalog();
+      setMessage(data.created ? 'Doctor added.' : 'Doctor already exists.');
+    } catch (doctorError) {
+      setError(doctorError.message);
+    }
+  }
+
+  async function saveDoctorEdit(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/doctors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingDoctor)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to save doctor.');
+      setEditingDoctor(null);
+      await loadDoctorCatalog();
+      setMessage('Doctor updated.');
+    } catch (doctorError) {
+      setError(doctorError.message);
+    }
+  }
+
+  async function deleteDoctor(id) {
+    if (!window.confirm('Delete this doctor? It cannot be deleted if used in treatments or sessions.')) return;
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch(`/api/doctors/${id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Unable to delete doctor.');
+      await loadDoctorCatalog();
+      setMessage('Doctor deleted.');
+    } catch (doctorError) {
+      setError(doctorError.message);
+    }
+  }
+
   return (
     <section className="management-layout">
+      {message && <div className="notice success">{message}</div>}
+      {error && <div className="notice error">{error}</div>}
       <form className="entry-form procedure-form" onSubmit={handleAddProcedure}>
         <fieldset>
           <legend>Add Procedure</legend>
@@ -1730,7 +1977,21 @@ function ProcedurePage({ newProcedureName, procedures, setNewProcedureName, hand
           <div className="procedure-list">
             {procedures.map((procedure) => (
               <div className="procedure-row" key={procedure.id}>
-                <span>{procedure.name}</span>
+                {editingProcedure?.id === procedure.id ? (
+                  <form className="row-edit-form" onSubmit={saveProcedureEdit}>
+                    <input value={editingProcedure.name} onChange={(event) => setEditingProcedure((current) => ({ ...current, name: event.target.value }))} required />
+                    <button type="submit">Save</button>
+                    <button type="button" onClick={() => setEditingProcedure(null)}>Cancel</button>
+                  </form>
+                ) : (
+                  <>
+                    <span>{procedure.name}</span>
+                    <span className="row-actions">
+                      <button type="button" onClick={() => setEditingProcedure(procedure)}>Edit</button>
+                      <button type="button" className="danger-button" onClick={() => deleteProcedure(procedure.id)}>Delete</button>
+                    </span>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -1738,11 +1999,74 @@ function ProcedurePage({ newProcedureName, procedures, setNewProcedureName, hand
           <p className="empty-state">No procedures added yet.</p>
         )}
       </section>
+
+      <form className="entry-form procedure-form" onSubmit={addDoctor}>
+        <fieldset>
+          <legend>Add Doctor</legend>
+          <div className="inline-form">
+            <label className="field">
+              <span>Doctor Name</span>
+              <input value={newDoctorName} onChange={(event) => setNewDoctorName(event.target.value)} placeholder="e.g. Dr Sana" required />
+            </label>
+            <button type="submit">Add Doctor</button>
+          </div>
+        </fieldset>
+      </form>
+
+      <section className="entry-form procedure-list-section">
+        <h2>Doctor List</h2>
+        {doctors.length ? (
+          <div className="procedure-list">
+            {doctors.map((doctor) => (
+              <div className="procedure-row" key={doctor.id}>
+                {editingDoctor?.id === doctor.id ? (
+                  <form className="row-edit-form" onSubmit={saveDoctorEdit}>
+                    <input value={editingDoctor.name} onChange={(event) => setEditingDoctor((current) => ({ ...current, name: event.target.value }))} required />
+                    <button type="submit">Save</button>
+                    <button type="button" onClick={() => setEditingDoctor(null)}>Cancel</button>
+                  </form>
+                ) : (
+                  <>
+                    <span>{doctor.name}</span>
+                    <span className="row-actions">
+                      <button type="button" onClick={() => setEditingDoctor(doctor)}>Edit</button>
+                      <button type="button" className="danger-button" onClick={() => deleteDoctor(doctor.id)}>Delete</button>
+                    </span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-state">No doctors added yet.</p>
+        )}
+      </section>
     </section>
   );
 }
 
-function TreatmentSummary({ treatment }) {
+function TreatmentSummary({
+  treatment,
+  procedures,
+  doctors,
+  onSaveTreatment,
+  onDeleteTreatment,
+  onSaveSession,
+  onDeleteSession,
+  onError
+}) {
+  const [editingTreatment, setEditingTreatment] = useState(false);
+  const [treatmentForm, setTreatmentForm] = useState(() => treatmentToForm(treatment));
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const [sessionForm, setSessionForm] = useState(null);
+
+  useEffect(() => {
+    setTreatmentForm(treatmentToForm(treatment));
+    setEditingTreatment(false);
+    setEditingSessionId(null);
+    setSessionForm(null);
+  }, [treatment.id]);
+
   const nextSession = Number(treatment.completed_sessions) + 1;
   const items = [
     ['Diagnosis', treatment.diagnosis],
@@ -1756,17 +2080,100 @@ function TreatmentSummary({ treatment }) {
   ];
   const sessions = treatment.sessions ?? [];
 
+  async function submitTreatmentEdit(event) {
+    event.preventDefault();
+    try {
+      await onSaveTreatment({ id: treatment.id, ...treatmentForm });
+      setEditingTreatment(false);
+    } catch (error) {
+      onError(error.message);
+    }
+  }
+
+  function editSession(session) {
+    setEditingSessionId(session.id);
+    setSessionForm({
+      id: session.id,
+      visitDate: session.visit_date || todayString(),
+      doctorName: session.doctor_name || '',
+      charges: session.charges ?? '',
+      nextAppointmentDate: session.next_appointment_date || '',
+      remarks: session.remarks || ''
+    });
+  }
+
+  async function submitSessionEdit(event) {
+    event.preventDefault();
+    try {
+      await onSaveSession(sessionForm);
+      setEditingSessionId(null);
+      setSessionForm(null);
+    } catch (error) {
+      onError(error.message);
+    }
+  }
+
   return (
     <section className="treatment-summary">
-      <h2>Active Treatment</h2>
-      <div className="summary-compact">
-        {items.map(([label, value]) => (
-          <div className="summary-tile" key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
+      <div className="section-header">
+        <h2>Active Treatment</h2>
+        <div className="row-actions">
+          <button type="button" onClick={() => setEditingTreatment(true)}>Edit</button>
+          <button type="button" className="danger-button" onClick={() => onDeleteTreatment(treatment.id)}>Delete</button>
+        </div>
       </div>
+      {editingTreatment ? (
+        <form className="inline-edit-panel" onSubmit={submitTreatmentEdit}>
+          <div className="form-grid">
+            <Field label="Diagnosis" required>
+              <input value={treatmentForm.diagnosis} onChange={(event) => setTreatmentForm((current) => ({ ...current, diagnosis: event.target.value }))} required />
+            </Field>
+            <Field label="Procedure" required>
+              <select value={treatmentForm.procedure} onChange={(event) => setTreatmentForm((current) => ({ ...current, procedure: event.target.value }))} required>
+                <option value="">Select procedure</option>
+                {procedures.map((procedure) => <option key={procedure.id} value={procedure.name}>{procedure.name}</option>)}
+              </select>
+            </Field>
+            <Field label="No. of Sessions" required>
+              <input type="number" min={treatment.completed_sessions || 1} value={treatmentForm.totalSessions} onChange={(event) => setTreatmentForm((current) => ({ ...current, totalSessions: event.target.value }))} required />
+            </Field>
+            <Field label="Charges (PKR)">
+              <input type="number" min="0" step="0.01" value={treatmentForm.charges} onChange={(event) => setTreatmentForm((current) => ({ ...current, charges: event.target.value }))} />
+            </Field>
+            <Field label="Doctor">
+              <input list="summary-doctor-list" value={treatmentForm.doctorName} onChange={(event) => setTreatmentForm((current) => ({ ...current, doctorName: event.target.value }))} />
+              <datalist id="summary-doctor-list">
+                {doctors.map((doctor) => <option key={doctor.id} value={doctor.name} />)}
+              </datalist>
+            </Field>
+            <Field label="Next Appointment">
+              <input type="date" value={treatmentForm.nextAppointmentDate} onChange={(event) => setTreatmentForm((current) => ({ ...current, nextAppointmentDate: event.target.value }))} />
+            </Field>
+            <Field label="Status">
+              <select value={treatmentForm.status} onChange={(event) => setTreatmentForm((current) => ({ ...current, status: event.target.value }))}>
+                <option value="active">Active</option>
+                <option value="completed">Completed</option>
+              </select>
+            </Field>
+            <Field label="Remarks" wide>
+              <textarea value={treatmentForm.remarks} onChange={(event) => setTreatmentForm((current) => ({ ...current, remarks: event.target.value }))} rows="3" />
+            </Field>
+          </div>
+          <div className="actions compact-actions">
+            <button type="submit">Save Treatment</button>
+            <button type="button" onClick={() => setEditingTreatment(false)}>Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <div className="summary-compact">
+          {items.map(([label, value]) => (
+            <div className="summary-tile" key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="session-history">
         <h3>Session Details</h3>
         {sessions.length ? (
@@ -1778,15 +2185,40 @@ function TreatmentSummary({ treatment }) {
               <span>Charges</span>
               <span>Next Date</span>
               <span>Remarks</span>
+              <span>Action</span>
             </div>
             {sessions.map((session) => (
               <div className="session-row" role="row" key={session.id}>
-                <span>{session.session_number}</span>
-                <span>{session.visit_date}</span>
-                <span>{session.doctor_name || 'Not set'}</span>
-                <span>{session.charges}</span>
-                <span>{session.next_appointment_date || 'Not set'}</span>
-                <span>{session.remarks || ''}</span>
+                {editingSessionId === session.id ? (
+                  <form className="session-row-edit" onSubmit={submitSessionEdit}>
+                    <input value={session.session_number} disabled />
+                    <input type="date" value={sessionForm.visitDate} onChange={(event) => setSessionForm((current) => ({ ...current, visitDate: event.target.value }))} required />
+                    <input list="session-doctor-list" value={sessionForm.doctorName} onChange={(event) => setSessionForm((current) => ({ ...current, doctorName: event.target.value }))} />
+                    <input type="number" min="0" step="0.01" value={sessionForm.charges} onChange={(event) => setSessionForm((current) => ({ ...current, charges: event.target.value }))} />
+                    <input type="date" value={sessionForm.nextAppointmentDate} onChange={(event) => setSessionForm((current) => ({ ...current, nextAppointmentDate: event.target.value }))} />
+                    <input value={sessionForm.remarks} onChange={(event) => setSessionForm((current) => ({ ...current, remarks: event.target.value }))} />
+                    <span className="row-actions">
+                      <button type="submit">Save</button>
+                      <button type="button" onClick={() => setEditingSessionId(null)}>Cancel</button>
+                    </span>
+                    <datalist id="session-doctor-list">
+                      {doctors.map((doctor) => <option key={doctor.id} value={doctor.name} />)}
+                    </datalist>
+                  </form>
+                ) : (
+                  <>
+                    <span>{session.session_number}</span>
+                    <span>{session.visit_date}</span>
+                    <span>{session.doctor_name || 'Not set'}</span>
+                    <span>{session.charges}</span>
+                    <span>{session.next_appointment_date || 'Not set'}</span>
+                    <span>{session.remarks || ''}</span>
+                    <span className="row-actions">
+                      <button type="button" onClick={() => editSession(session)}>Edit</button>
+                      <button type="button" className="danger-button" onClick={() => onDeleteSession(session.id)}>Delete</button>
+                    </span>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -1796,6 +2228,19 @@ function TreatmentSummary({ treatment }) {
       </div>
     </section>
   );
+}
+
+function treatmentToForm(treatment) {
+  return {
+    diagnosis: treatment.diagnosis || '',
+    procedure: treatment.procedure || '',
+    totalSessions: treatment.total_sessions || 1,
+    charges: treatment.charges ?? '',
+    doctorName: treatment.doctor_name || '',
+    nextAppointmentDate: treatment.next_appointment_date || '',
+    remarks: treatment.remarks || '',
+    status: treatment.status || 'active'
+  };
 }
 
 function StatusItem({ label, value }) {

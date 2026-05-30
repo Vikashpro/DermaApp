@@ -74,7 +74,7 @@ export function lookupPatient(db, { cnic, contact }) {
 export function listDoctors(db, search = '') {
   const term = `%${doctorKey(search)}%`;
   return db
-    .prepare('SELECT id, name FROM doctors WHERE name_key LIKE ? ORDER BY name LIMIT 10')
+    .prepare('SELECT id, name FROM doctors WHERE name_key LIKE ? ORDER BY name LIMIT 100')
     .all(term);
 }
 
@@ -104,6 +104,79 @@ export function createProcedure(db, name) {
     },
     created: true
   };
+}
+
+export function saveProcedure(db, { id, name } = {}) {
+  const procedureId = Number(id || 0);
+  const procedureName = cleanText(name);
+  if (!procedureName) throw new Error('Procedure name is required.');
+
+  if (!procedureId) return createProcedure(db, procedureName);
+
+  const existing = db.prepare('SELECT id FROM procedures WHERE id = ?').get(procedureId);
+  if (!existing) throw new Error('Procedure not found.');
+
+  const key = catalogKey(procedureName);
+  const duplicate = db.prepare('SELECT id FROM procedures WHERE name_key = ? AND id != ?').get(key, procedureId);
+  if (duplicate) throw new Error('Another procedure already has this name.');
+
+  db.prepare(`
+    UPDATE procedures
+    SET name = ?, name_key = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(procedureName, key, procedureId);
+
+  return { procedure: db.prepare('SELECT id, name FROM procedures WHERE id = ?').get(procedureId), created: false };
+}
+
+export function deleteProcedure(db, id) {
+  const procedureId = Number(id || 0);
+  if (!procedureId) throw new Error('Procedure is required.');
+  const procedure = db.prepare('SELECT * FROM procedures WHERE id = ?').get(procedureId);
+  if (!procedure) throw new Error('Procedure not found.');
+
+  const used = db.prepare('SELECT COUNT(*) AS count FROM treatments WHERE procedure = ?').get(procedure.name);
+  if (used.count > 0) throw new Error('Procedure is used in treatments and cannot be deleted.');
+
+  db.prepare('DELETE FROM procedures WHERE id = ?').run(procedureId);
+  return { deleted: true };
+}
+
+export function saveDoctor(db, { id, name } = {}) {
+  const doctorId = Number(id || 0);
+  const doctorName = cleanText(name);
+  if (!doctorName) throw new Error('Doctor name is required.');
+
+  if (!doctorId) {
+    const id = upsertDoctor(db, doctorName);
+    return { doctor: db.prepare('SELECT id, name FROM doctors WHERE id = ?').get(id), created: true };
+  }
+
+  const existing = db.prepare('SELECT id FROM doctors WHERE id = ?').get(doctorId);
+  if (!existing) throw new Error('Doctor not found.');
+
+  const key = doctorKey(doctorName);
+  const duplicate = db.prepare('SELECT id FROM doctors WHERE name_key = ? AND id != ?').get(key, doctorId);
+  if (duplicate) throw new Error('Another doctor already has this name.');
+
+  db.prepare(`
+    UPDATE doctors
+    SET name = ?, name_key = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(doctorName, key, doctorId);
+
+  return { doctor: db.prepare('SELECT id, name FROM doctors WHERE id = ?').get(doctorId), created: false };
+}
+
+export function deleteDoctor(db, id) {
+  const doctorId = Number(id || 0);
+  if (!doctorId) throw new Error('Doctor is required.');
+  const treatmentCount = db.prepare('SELECT COUNT(*) AS count FROM treatments WHERE doctor_id = ?').get(doctorId).count;
+  const sessionCount = db.prepare('SELECT COUNT(*) AS count FROM treatment_sessions WHERE doctor_id = ?').get(doctorId).count;
+  if (treatmentCount || sessionCount) throw new Error('Doctor is used in treatments or sessions and cannot be deleted.');
+  const result = db.prepare('DELETE FROM doctors WHERE id = ?').run(doctorId);
+  if (!result.changes) throw new Error('Doctor not found.');
+  return { deleted: true };
 }
 
 export function getClinicSettings(db) {
@@ -287,6 +360,193 @@ export function updateAppointmentDate(db, { treatmentId, nextAppointmentDate }) 
   `).run(appointmentDate, id);
 
   return db.prepare('SELECT id, next_appointment_date FROM treatments WHERE id = ?').get(id);
+}
+
+export function updatePatient(db, { id, name, cnic, contact, age, gender } = {}) {
+  const patientId = Number(id || 0);
+  const patientName = cleanText(name);
+  const cnicValue = cleanText(cnic);
+  const contactValue = cleanText(contact);
+  const ageValue = cleanNumber(age);
+  const genderValue = cleanText(gender);
+
+  if (!patientId) throw new Error('Patient is required.');
+  if (!patientName) throw new Error('Patient name is required.');
+  if (!cnicValue && !contactValue) throw new Error('CNIC or contact number is required.');
+
+  const existing = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
+  if (!existing) throw new Error('Patient not found.');
+  if (cnicValue) {
+    const duplicate = db.prepare('SELECT id FROM patients WHERE cnic = ? AND id != ?').get(cnicValue, patientId);
+    if (duplicate) throw new Error('Another patient already has this CNIC.');
+  }
+
+  db.prepare(`
+    UPDATE patients
+    SET name = ?, cnic = ?, contact = ?, age = ?, gender = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(patientName, cnicValue, contactValue, ageValue, genderValue, patientId);
+
+  return getPatientSummary(db, patientId);
+}
+
+export function deletePatient(db, id) {
+  const patientId = Number(id || 0);
+  if (!patientId) throw new Error('Patient is required.');
+  const treatmentCount = db.prepare('SELECT COUNT(*) AS count FROM treatments WHERE patient_id = ?').get(patientId).count;
+  if (treatmentCount > 0) throw new Error('Patient has treatment records and cannot be deleted.');
+  const result = db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+  if (!result.changes) throw new Error('Patient not found.');
+  return { deleted: true };
+}
+
+export function updateTreatment(db, input = {}) {
+  const treatmentId = Number(input.id || input.treatmentId || 0);
+  const diagnosis = cleanText(input.diagnosis);
+  const procedure = cleanText(input.procedure);
+  const totalSessions = Math.trunc(cleanNumber(input.totalSessions ?? input.total_sessions, 1));
+  const charges = cleanNumber(input.charges, 0);
+  const doctorName = cleanText(input.doctorName ?? input.doctor_name);
+  const nextAppointmentDate = cleanText(input.nextAppointmentDate ?? input.next_appointment_date);
+  const remarks = cleanText(input.remarks);
+  const status = cleanText(input.status) || 'active';
+
+  if (!treatmentId) throw new Error('Treatment is required.');
+  if (!diagnosis) throw new Error('Diagnosis is required.');
+  if (!procedure) throw new Error('Procedure is required.');
+  if (!Number.isInteger(totalSessions) || totalSessions < 1) throw new Error('Number of sessions must be at least 1.');
+  if (charges < 0) throw new Error('Charges cannot be negative.');
+  if (!['active', 'completed'].includes(status)) throw new Error('Invalid treatment status.');
+
+  const current = db.prepare(`
+    SELECT t.*, COUNT(s.id) AS completed_sessions
+    FROM treatments t
+    LEFT JOIN treatment_sessions s ON s.treatment_id = t.id
+    WHERE t.id = ?
+    GROUP BY t.id
+  `).get(treatmentId);
+  if (!current) throw new Error('Treatment not found.');
+  if (totalSessions < current.completed_sessions) {
+    throw new Error('Total sessions cannot be less than completed sessions.');
+  }
+
+  const doctorId = doctorName ? upsertDoctor(db, doctorName) : null;
+  db.prepare(`
+    UPDATE treatments
+    SET doctor_id = ?,
+        diagnosis = ?,
+        procedure = ?,
+        total_sessions = ?,
+        charges = ?,
+        next_appointment_date = ?,
+        remarks = ?,
+        status = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(doctorId, diagnosis, procedure, totalSessions, charges, nextAppointmentDate, remarks, status, treatmentId);
+
+  if (status === 'completed') {
+    db.prepare('UPDATE treatments SET next_appointment_date = NULL WHERE id = ?').run(treatmentId);
+  }
+
+  return getPatientSummary(db, current.patient_id);
+}
+
+export function deleteTreatment(db, id) {
+  const treatmentId = Number(id || 0);
+  if (!treatmentId) throw new Error('Treatment is required.');
+  const treatment = db.prepare('SELECT patient_id FROM treatments WHERE id = ?').get(treatmentId);
+  if (!treatment) throw new Error('Treatment not found.');
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM treatment_sessions WHERE treatment_id = ?').run(treatmentId);
+    db.prepare('DELETE FROM treatments WHERE id = ?').run(treatmentId);
+    const summary = getPatientSummary(db, treatment.patient_id);
+    db.exec('COMMIT');
+    return summary;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function updateSession(db, input = {}) {
+  const sessionId = Number(input.id || input.sessionId || 0);
+  const visitDate = cleanText(input.visitDate ?? input.visit_date);
+  const nextAppointmentDate = cleanText(input.nextAppointmentDate ?? input.next_appointment_date);
+  const charges = cleanNumber(input.charges, 0);
+  const remarks = cleanText(input.remarks);
+  const doctorName = cleanText(input.doctorName ?? input.doctor_name);
+
+  if (!sessionId) throw new Error('Session is required.');
+  if (!visitDate) throw new Error('Visit date is required.');
+  if (charges < 0) throw new Error('Charges cannot be negative.');
+
+  const session = db.prepare(`
+    SELECT s.*, t.patient_id, t.total_sessions
+    FROM treatment_sessions s
+    JOIN treatments t ON t.id = s.treatment_id
+    WHERE s.id = ?
+  `).get(sessionId);
+  if (!session) throw new Error('Session not found.');
+
+  const doctorId = doctorName ? upsertDoctor(db, doctorName) : null;
+  db.prepare(`
+    UPDATE treatment_sessions
+    SET doctor_id = ?, visit_date = ?, next_appointment_date = ?, charges = ?, remarks = ?
+    WHERE id = ?
+  `).run(doctorId, visitDate, nextAppointmentDate, charges, remarks, sessionId);
+
+  db.prepare(`
+    UPDATE treatments
+    SET next_appointment_date = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(nextAppointmentDate, session.treatment_id);
+
+  return getPatientSummary(db, session.patient_id);
+}
+
+export function deleteSession(db, id) {
+  const sessionId = Number(id || 0);
+  if (!sessionId) throw new Error('Session is required.');
+  const session = db.prepare(`
+    SELECT s.*, t.patient_id
+    FROM treatment_sessions s
+    JOIN treatments t ON t.id = s.treatment_id
+    WHERE s.id = ?
+  `).get(sessionId);
+  if (!session) throw new Error('Session not found.');
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM treatment_sessions WHERE id = ?').run(sessionId);
+    db.prepare(`
+      UPDATE treatment_sessions
+      SET session_number = session_number - 1
+      WHERE treatment_id = ? AND session_number > ?
+    `).run(session.treatment_id, session.session_number);
+    const latest = db.prepare(`
+      SELECT next_appointment_date
+      FROM treatment_sessions
+      WHERE treatment_id = ?
+      ORDER BY session_number DESC
+      LIMIT 1
+    `).get(session.treatment_id);
+    db.prepare(`
+      UPDATE treatments
+      SET status = 'active',
+          next_appointment_date = COALESCE(?, next_appointment_date),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(latest?.next_appointment_date ?? null, session.treatment_id);
+    const summary = getPatientSummary(db, session.patient_id);
+    db.exec('COMMIT');
+    return summary;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function treatmentStatusReport(db, { status, procedure, doctor, from, to } = {}) {
